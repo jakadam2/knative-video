@@ -1,4 +1,11 @@
 specVersion: 0.36.0
 name: main
 runtime: python
+image: 125383788004.dkr.ecr.us-east-1.amazonaws.com/default/knative-video:main
+namespace: default
 created: 2025-05-31T14:21:22.540531845+02:00
+build:
+  builder: pack
+deploy:
+  namespace: default
+  image: 125383788004.dkr.ecr.us-east-1.amazonaws.com/default/knative-video@sha256:5a22b06bb2e488647dee1a16ff7ccfa0bbff36054aa4e98c5d85035d00aec3c2

@@ -1,17 +1,16 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# Load environment variables from config.env
-if [ -f ./config.env ]; then
-  export $(grep -v '^#' ./config.env | xargs)
-else
-  echo "Error: config.env file not found!"
-  exit 1
-fi
+set -euo pipefail
 
-echo "Using parameters:"
+# Load environment variables safely
+set -o allexport
+source ./config.env
+set +o allexport
+
+
+echo "📦 Using parameters:"
 echo "REGION=$REGION"
 echo "SNS_ACCOUNT_ID=$SNS_ACCOUNT_ID"
-echo "SNS_ENDPOINT=$SNS_ENDPOINT"
 echo "PREFIX=$PREFIX"
 
 ## Create EKS
@@ -25,12 +24,18 @@ kubectl apply -f https://github.com/knative/net-kourier/releases/download/knativ
 kubectl patch configmap/config-network -n knative-serving -p '{"data":{"ingress.class":"kourier.ingress.networking.knative.dev"}}'
 
 ## Create ECR
-aws ecr create-repository --repository-name default/knative-video --image-scanning-configuration scanOnPush=true --region "$REGION" --tags Key=CreatedBy,Value=CLI
-aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$SNS_ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
+aws ecr create-repository \
+  --repository-name default/knative-video \
+  --image-scanning-configuration scanOnPush=true \
+  --region "$REGION" \
+  --tags Key=CreatedBy,Value=CLI
+
+aws ecr get-login-password --region "$REGION" \
+  | docker login --username AWS --password-stdin "$SNS_ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
 
 ## Create SNS topic
 SNS_TOPIC_ARN="arn:aws:sns:$REGION:$SNS_ACCOUNT_ID:video-topic"
-aws sns create-topic --name video-topic --region "$REGION"
+aws sns create-topic --name video-topic --region "$REGION" >/dev/null
 
 ## Set SNS privileges
 aws sns set-topic-attributes \
@@ -58,8 +63,14 @@ aws sns set-topic-attributes \
   }" \
   --region "$REGION"
 
-## Create S3 bucket
-aws s3api create-bucket --bucket knative-video-s3 --region "$REGION"
+## Create S3 bucket (works differently in us-east-1!)
+if [[ "$REGION" == "us-east-1" ]]; then
+  aws s3api create-bucket --bucket knative-video-s3 --region "$REGION"
+else
+  aws s3api create-bucket --bucket knative-video-s3 \
+    --region "$REGION" \
+    --create-bucket-configuration LocationConstraint="$REGION"
+fi
 
 ## Set notification policy with prefix filter
 aws s3api put-bucket-notification-configuration \
@@ -84,17 +95,44 @@ aws s3api put-bucket-notification-configuration \
     ]
   }"
 
-SNS_ENDPOINT="http://$(kubectl get svc nginx-proxy -n default -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')/sns"
-## Set HTTP notifications
-aws sns subscribe \
-  --topic-arn "$SNS_TOPIC_ARN" \
-  --protocol http \
-  --notification-endpoint "$SNS_ENDPOINT"
+# ## Set public bucket policy
+# aws s3api put-bucket-policy \
+#   --bucket knative-video-s3 \
+#   --policy "{
+#     \"Version\": \"2012-10-17\",
+#     \"Statement\": [
+#       {
+#         \"Sid\": \"PublicReadWriteGetPut\",
+#         \"Effect\": \"Allow\",
+#         \"Principal\": \"*\",
+#         \"Action\": [
+#           \"s3:GetObject\",
+#           \"s3:PutObject\"
+#         ],
+#         \"Resource\": \"arn:aws:s3:::knative-video-s3/*\"
+#       }
+#     ]
+#   }"
 
+## Deploy function
 cd ./main
-func deploy --build --repository 125383788004.dkr.ecr.us-east-1.amazonaws.com/default/knative-video:main
-cd ../
+func deploy --build --image "$SNS_ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/default/knative-video:main"
+cd ..
 
 ## Deploy nGINX
 kubectl apply -f nginx-config.yaml
 kubectl apply -f nginx-proxy.yaml
+
+## Get SNS endpoint from nginx
+SNS_ENDPOINT_HOST=$(kubectl get svc kourier --namespace kourier-system -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+SNS_ENDPOINT="http://$SNS_ENDPOINT_HOST/sns"
+echo "SNS Endpoint: $SNS_ENDPOINT"
+
+## Set HTTP notifications
+aws sns subscribe \
+  --topic-arn "$SNS_TOPIC_ARN" \
+  --protocol http \
+  --notification-endpoint "$SNS_ENDPOINT" \
+  --region "$REGION"
+
+echo "END"

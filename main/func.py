@@ -1,63 +1,77 @@
 from parliament import Context
 from flask import Request
 import json
+import boto3
+import datetime
+import os
+import uuid
 
+# Constants from env
+BUCKET_NAME = "knative-video-s3"
+PREFIX = os.getenv("PREFIX", "knative-video")
 
-# parse request body, json data or URL query parameters
-def payload_print(req: Request) -> str:
-    if req.method == "POST":
+# S3 client
+s3 = boto3.client("s3")
+
+def parse_payload(req: Request) -> dict:
+    try:
         if req.is_json:
-            return json.dumps(req.json) + "\n"
+            return req.get_json()
         else:
-            # MultiDict needs some iteration
-            ret = "{"
+            return {}
+    except Exception as e:
+        print(f"Error parsing JSON: {e}", flush=True)
+        return {}
 
-            for key in req.form.keys():
-                ret += '"' + key + '": "'+ req.form[key] + '", '
+def upload_to_s3(data: dict):
+    try:
+        now = datetime.datetime.utcnow().isoformat()
+        unique_id = uuid.uuid4().hex
+        key = f"{PREFIX}-{now}-{unique_id}.json"
+        body = json.dumps(data)
 
-            return ret[:-2] + "}\n" if len(ret) > 2 else "{}"
+        print(f"Uploading to S3 bucket '{BUCKET_NAME}' with key '{key}'", flush=True)
 
-    elif req.method == "GET":
-        # MultiDict needs some iteration
-        ret = "{"
+        s3.put_object(
+            Bucket=BUCKET_NAME,
+            Key=key,
+            Body=body,
+            ContentType="application/json"
+        )
 
-        for key in req.args.keys():
-            ret += '"' + key + '": "' + req.args[key] + '", '
-
-        return ret[:-2] + "}\n" if len(ret) > 2 else "{}"
-
-
-# pretty print the request to stdout instantaneously
-def pretty_print(req: Request) -> str:
-    ret = str(req.method) + ' ' + str(req.url) + ' ' + str(req.host) + '\n'
-    for (header, values) in req.headers:
-        ret += "  " + str(header) + ": " + values + '\n'
-
-    if req.method == "POST":
-        ret += "Request body:\n"
-        ret += "  " + payload_print(req) + '\n'
-
-    elif req.method == "GET":
-        ret += "URL Query String:\n"
-        ret += "  " + payload_print(req) + '\n'
-
-    return ret
-
+        print("Upload successful", flush=True)
+        return key
+    except Exception as e:
+        print(f"Failed to upload to S3: {e}", flush=True)
+        return None
 
 def main(context: Context):
-    """
-    Function template
-    The context parameter contains the Flask request object and any
-    CloudEvent received with the request.
-    """
-
-    # Add your business logic here
-    print("Received request")
+    print("🔔 Received request")
 
     if 'request' in context.keys():
-        ret = pretty_print(context.request)
-        print(ret, flush=True)
-        return payload_print(context.request), 200
+        req = context.request
+        event_data = parse_payload(req)
+
+        print(f"Raw event data: {event_data}", flush=True)
+
+        # If from SNS, extract the 'Message' field
+        if "Type" in event_data and event_data["Type"] == "Notification":
+            message_str = event_data.get("Message", "{}")
+            try:
+                # Try to parse nested JSON
+                message_data = json.loads(message_str)
+            except json.JSONDecodeError:
+                message_data = {"raw_message": message_str}
+        else:
+            message_data = event_data
+
+        print(f"Data to upload: {message_data}", flush=True)
+        key = upload_to_s3(message_data)
+
+        if key:
+            return f"Uploaded to S3 as {key}\n", 200
+        else:
+            return "Failed to upload\n", 500
     else:
-        print("Empty request", flush=True)
+        print("⚠️ Empty request", flush=True)
         return "{}", 200
