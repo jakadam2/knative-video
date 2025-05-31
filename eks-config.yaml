@@ -1,0 +1,20 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: video-knative
+  region: us-east-1
+  version: "1.32"
+
+iam:
+  serviceRoleARN: arn:aws:iam::125383788004:role/LabRole
+
+nodeGroups:
+  - name: ng-video-knative
+    instanceType: t3.small
+    desiredCapacity: 2
+    volumeSize: 20
+    ssh:
+      allow: false
+    iam:
+      instanceRoleARN: arn:aws:iam::125383788004:role/LabRole
