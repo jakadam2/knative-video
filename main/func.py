@@ -1,77 +1,82 @@
 from parliament import Context
 from flask import Request
 import json
-import boto3
-import datetime
-import os
-import uuid
+import requests
+import xml.etree.ElementTree as ET
 
-# Constants from env
-BUCKET_NAME = "knative-video-s3"
-PREFIX = os.getenv("PREFIX", "knative-video")
+def payload_print(req: Request) -> str:
+    if req.method == "POST":
+        # jeśli przychodzi JSON (np. SNS), to skonwertuj na string
+        if req.is_json or req.content_type.startswith("text/plain"):
+            try:
+                return json.dumps(req.get_json(force=True)) + "\n"
+            except Exception:
+                pass
 
-# S3 client
-s3 = boto3.client("s3")
+        # w przeciwnym razie wypisz pola form-data
+        ret = "{"
+        for key in req.form.keys():
+            ret += f'"{key}": "{req.form[key]}", '
+        return ret[:-2] + "}\n" if len(ret) > 2 else "{}"
+    elif req.method == "GET":
+        ret = "{"
+        for key in req.args.keys():
+            ret += f'"{key}": "{req.args[key]}", '
+        return ret[:-2] + "}\n" if len(ret) > 2 else "{}"
 
-def parse_payload(req: Request) -> dict:
-    try:
-        if req.is_json:
-            return req.get_json()
-        else:
-            return {}
-    except Exception as e:
-        print(f"Error parsing JSON: {e}", flush=True)
-        return {}
-
-def upload_to_s3(data: dict):
-    try:
-        now = datetime.datetime.utcnow().isoformat()
-        unique_id = uuid.uuid4().hex
-        key = f"{PREFIX}-{now}-{unique_id}.json"
-        body = json.dumps(data)
-
-        print(f"Uploading to S3 bucket '{BUCKET_NAME}' with key '{key}'", flush=True)
-
-        s3.put_object(
-            Bucket=BUCKET_NAME,
-            Key=key,
-            Body=body,
-            ContentType="application/json"
-        )
-
-        print("Upload successful", flush=True)
-        return key
-    except Exception as e:
-        print(f"Failed to upload to S3: {e}", flush=True)
-        return None
+def pretty_print(req: Request) -> str:
+    ret = f"{req.method} {req.url} {req.host}\n"
+    # użycie .items(), żeby wychwycić pary (nagłówek, wartość)
+    for header, value in req.headers.items():
+        ret += f"  {header}: {value}\n"
+    if req.method == "POST":
+        ret += "Request body:\n"
+        ret += f"  {payload_print(req)}\n"
+    elif req.method == "GET":
+        ret += "URL Query String:\n"
+        ret += f"  {payload_print(req)}\n"
+    return ret
 
 def main(context: Context):
-    print("🔔 Received request")
+    """
+    AWS SNS-compatible Knative function z obsługą potwierdzenia subskrypcji.
+    """
+    print("Received request")
 
-    if 'request' in context.keys():
-        req = context.request
-        event_data = parse_payload(req)
-
-        print(f"Raw event data: {event_data}", flush=True)
-
-        # If from SNS, extract the 'Message' field
-        if "Type" in event_data and event_data["Type"] == "Notification":
-            message_str = event_data.get("Message", "{}")
-            try:
-                # Try to parse nested JSON
-                message_data = json.loads(message_str)
-            except json.JSONDecodeError:
-                message_data = {"raw_message": message_str}
-        else:
-            message_data = event_data
-
-        print(f"Data to upload: {message_data}", flush=True)
-        key = upload_to_s3(message_data)
-
-        if key:
-            return f"Uploaded to S3 as {key}\n", 200
-        else:
-            return "Failed to upload\n", 500
-    else:
-        print("⚠️ Empty request", flush=True)
+    if 'request' not in context:
+        print("Empty request", flush=True)
         return "{}", 200
+
+    req = context.request
+    print(pretty_print(req), flush=True)
+
+    # Wymuszone parsowanie JSON, bo SNS wysyła Content-Type: text/plain
+    data = req.get_json(force=True, silent=True)
+    if data and data.get("Type") == "SubscriptionConfirmation":
+        subscribe_url = data.get("SubscribeURL")
+        print("SNS SubscriptionConfirmation received. Confirming...", flush=True)
+        print(f"SubscribeURL: {subscribe_url}", flush=True)
+        try:
+            resp = requests.get(subscribe_url)
+            if resp.status_code == 200:
+                print("Subscription confirmed successfully.", flush=True)
+                # W parsowaniu XML wykorzystujemy namespace SNSa
+                try:
+                    root = ET.fromstring(resp.text)
+                    namespace = {'ns': 'http://sns.amazonaws.com/doc/2010-03-31/'}
+                    subscription_arn = root.find('.//ns:SubscriptionArn', namespace)
+                    if subscription_arn is not None:
+                        print(f"SubscriptionArn: {subscription_arn.text}", flush=True)
+                    else:
+                        print("SubscriptionArn not found in the response.", flush=True)
+                except ET.ParseError as e:
+                    print(f"Error parsing XML response: {e}", flush=True)
+            else:
+                print(f"Failed to confirm subscription. Status code: {resp.status_code}", flush=True)
+                print(f"Response body: {resp.text}", flush=True)
+        except Exception as e:
+            print(f"Error during subscription confirmation: {e}", flush=True)
+        return "Subscription confirmation handled\n", 200
+
+    # Domyślne wypisanie payloadu dla pozostałych wiadomości SNS lub zwykłych requestów
+    return payload_print(req), 200

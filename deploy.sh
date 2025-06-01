@@ -7,28 +7,34 @@ set -o allexport
 source ./config.env
 set +o allexport
 
-
-echo "📦 Using parameters:"
 echo "REGION=$REGION"
 echo "SNS_ACCOUNT_ID=$SNS_ACCOUNT_ID"
 echo "PREFIX=$PREFIX"
 
 ## Create EKS
-# eksctl create cluster -f eks-config.yaml 
-# aws eks update-kubeconfig --region "$REGION" --name video-knative
+eksctl create cluster -f eks-config.yaml 
+aws eks update-kubeconfig --region "$REGION" --name video-knative
 
-# ## Config EKS
-# kubectl apply -f https://github.com/knative/serving/releases/download/knative-v1.14.0/serving-crds.yaml
-# kubectl apply -f https://github.com/knative/serving/releases/download/knative-v1.14.0/serving-core.yaml
-# kubectl apply -f https://github.com/knative/net-kourier/releases/download/knative-v1.14.0/kourier.yaml
-# kubectl patch configmap/config-network -n knative-serving -p '{"data":{"ingress.class":"kourier.ingress.networking.knative.dev"}}'
+## Config EKS
+kubectl apply -f https://github.com/knative/serving/releases/download/knative-v1.14.0/serving-crds.yaml
+kubectl apply -f https://github.com/knative/serving/releases/download/knative-v1.14.0/serving-core.yaml
+kubectl apply -f https://github.com/knative/net-kourier/releases/download/knative-v1.14.0/kourier.yaml
+kubectl patch configmap/config-network -n knative-serving -p '{"data":{"ingress.class":"kourier.ingress.networking.knative.dev"}}'
 
-# ## Create ECR
-# aws ecr create-repository \
-#   --repository-name default/knative-video \
-#   --image-scanning-configuration scanOnPush=true \
-#   --region "$REGION" \
-#   --tags Key=CreatedBy,Value=CLI
+## Deploy nGINX
+kubectl apply -f nginx-config.yaml
+kubectl apply -f nginx-proxy.yaml
+kubectl apply -f nginx-service.yaml
+
+## Wait for proxy
+sleep 120
+
+## Create ECR
+aws ecr create-repository \
+  --repository-name default/knative-video \
+  --image-scanning-configuration scanOnPush=true \
+  --region "$REGION" \
+  --tags Key=CreatedBy,Value=CLI
 
 aws ecr get-login-password --region "$REGION" \
   | docker login --username AWS --password-stdin "$SNS_ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
@@ -119,12 +125,8 @@ cd ./main
 func deploy --build --image "$SNS_ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/default/knative-video:main"
 cd ..
 
-## Deploy nGINX
-kubectl apply -f nginx-config.yaml
-kubectl apply -f nginx-proxy.yaml
-
 ## Get SNS endpoint from nginx
-SNS_ENDPOINT_HOST=$(kubectl get svc kourier --namespace kourier-system -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+SNS_ENDPOINT_HOST=$(kubectl get svc nginx-proxy --namespace default -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 SNS_ENDPOINT="http://$SNS_ENDPOINT_HOST/sns"
 echo "SNS Endpoint: $SNS_ENDPOINT"
 
