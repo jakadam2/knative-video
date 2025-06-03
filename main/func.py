@@ -1,82 +1,110 @@
-from parliament import Context
-from flask import Request
 import json
+import boto3
 import requests
-import xml.etree.ElementTree as ET
+from flask import Request
+from parliament import Context
+from botocore.exceptions import ClientError
 
-def payload_print(req: Request) -> str:
-    if req.method == "POST":
-        # jeśli przychodzi JSON (np. SNS), to skonwertuj na string
-        if req.is_json or req.content_type.startswith("text/plain"):
-            try:
-                return json.dumps(req.get_json(force=True)) + "\n"
-            except Exception:
-                pass
+def extract_s3_object_info(sns_message: dict) -> tuple[str, str]:
+    """
+    Wyodrębnia nazwę bucketa i klucz obiektu z powiadomienia SNS.
+    """
+    try:
+        record = sns_message["Records"][0]
+        bucket_name = record["s3"]["bucket"]["name"]
+        object_key = record["s3"]["object"]["key"]
+        return bucket_name, object_key
+    except (KeyError, IndexError) as e:
+        print(f"Błąd podczas wyodrębniania informacji z powiadomienia SNS: {e}")
+        return None, None
 
-        # w przeciwnym razie wypisz pola form-data
-        ret = "{"
-        for key in req.form.keys():
-            ret += f'"{key}": "{req.form[key]}", '
-        return ret[:-2] + "}\n" if len(ret) > 2 else "{}"
-    elif req.method == "GET":
-        ret = "{"
-        for key in req.args.keys():
-            ret += f'"{key}": "{req.args[key]}", '
-        return ret[:-2] + "}\n" if len(ret) > 2 else "{}"
+def copy_mp3_object(bucket_name: str, object_key: str,
+                    aws_access_key: str, aws_secret_key: str,
+                    aws_session_token: str, aws_region: str = 'us-east-1') -> bool:
 
-def pretty_print(req: Request) -> str:
-    ret = f"{req.method} {req.url} {req.host}\n"
-    # użycie .items(), żeby wychwycić pary (nagłówek, wartość)
-    for header, value in req.headers.items():
-        ret += f"  {header}: {value}\n"
-    if req.method == "POST":
-        ret += "Request body:\n"
-        ret += f"  {payload_print(req)}\n"
-    elif req.method == "GET":
-        ret += "URL Query String:\n"
-        ret += f"  {payload_print(req)}\n"
-    return ret
+    if not object_key.lower().endswith('.mp3'):
+        return False
+
+    s3 = boto3.client(
+        's3',
+        region_name=aws_region,
+        aws_access_key_id=aws_access_key,
+        aws_secret_access_key=aws_secret_key,
+        aws_session_token=aws_session_token
+    )
+
+    copy_source = {
+        'Bucket': bucket_name,
+        'Key': object_key
+    }
+
+
+    new_key = f"{object_key}.copy"
+
+    try:
+        s3.copy_object(
+            Bucket=bucket_name,
+            CopySource=copy_source,
+            Key=new_key
+        )
+        return True
+    except ClientError as e:
+        return False
 
 def main(context: Context):
-    """
-    AWS SNS-compatible Knative function z obsługą potwierdzenia subskrypcji.
-    """
-    print("Received request")
+
+    print("Otrzymano żądanie")
 
     if 'request' not in context:
-        print("Empty request", flush=True)
+        print("Brak danych w żądaniu.")
         return "{}", 200
 
-    req = context.request
-    print(pretty_print(req), flush=True)
+    req: Request = context.request
 
-    # Wymuszone parsowanie JSON, bo SNS wysyła Content-Type: text/plain
+    # Parsowanie treści żądania
     data = req.get_json(force=True, silent=True)
-    if data and data.get("Type") == "SubscriptionConfirmation":
-        subscribe_url = data.get("SubscribeURL")
-        print("SNS SubscriptionConfirmation received. Confirming...", flush=True)
-        print(f"SubscribeURL: {subscribe_url}", flush=True)
-        try:
-            resp = requests.get(subscribe_url)
-            if resp.status_code == 200:
-                print("Subscription confirmed successfully.", flush=True)
-                # W parsowaniu XML wykorzystujemy namespace SNSa
-                try:
-                    root = ET.fromstring(resp.text)
-                    namespace = {'ns': 'http://sns.amazonaws.com/doc/2010-03-31/'}
-                    subscription_arn = root.find('.//ns:SubscriptionArn', namespace)
-                    if subscription_arn is not None:
-                        print(f"SubscriptionArn: {subscription_arn.text}", flush=True)
-                    else:
-                        print("SubscriptionArn not found in the response.", flush=True)
-                except ET.ParseError as e:
-                    print(f"Error parsing XML response: {e}", flush=True)
-            else:
-                print(f"Failed to confirm subscription. Status code: {resp.status_code}", flush=True)
-                print(f"Response body: {resp.text}", flush=True)
-        except Exception as e:
-            print(f"Error during subscription confirmation: {e}", flush=True)
-        return "Subscription confirmation handled\n", 200
+    if not data:
+        return "Brak danych JSON w żądaniu.", 400
 
-    # Domyślne wypisanie payloadu dla pozostałych wiadomości SNS lub zwykłych requestów
-    return payload_print(req), 200
+    # Obsługa potwierdzenia subskrypcji SNS
+    if data.get("Type") == "SubscriptionConfirmation":
+        subscribe_url = data.get("SubscribeURL")
+        try:
+            response = requests.get(subscribe_url)
+            if response.status_code == 200:
+                print("Subskrypcja potwierdzona pomyślnie.")
+            else:
+                print(f"Błąd podczas potwierdzania subskrypcji. Status: {response.status_code}")
+        except Exception as e:
+            print(f"Błąd podczas potwierdzania subskrypcji: {e}")
+        return "Potwierdzenie subskrypcji obsłużone.", 200
+
+    # Obsługa powiadomienia o utworzeniu obiektu w S3
+    if data.get("Type") == "Notification":
+        message_str = data.get("Message")
+        try:
+            message = json.loads(message_str)
+        except json.JSONDecodeError as e:
+            print(f"Błąd podczas dekodowania wiadomości SNS: {e}")
+            return "Błąd podczas dekodowania wiadomości SNS.", 400
+
+        bucket_name, object_key = extract_s3_object_info(message)
+        if not bucket_name or not object_key:
+            return "Nieprawidłowe dane w wiadomości SNS.", 400
+
+        aws_access_key = ''
+        aws_secret_key = ''
+        aws_session_token = ''
+        aws_region = 'us-east-1'  # Zmień na odpowiedni region
+        bucket_name = 'knative-video-s3'  # Zmień na nazwę swojego bucketa
+
+        success = copy_mp3_object(bucket_name, object_key,
+                                  aws_access_key, aws_secret_key,
+                                  aws_session_token, aws_region)
+        if success:
+            return f"Plik '{object_key}' został skopiowany pomyślnie.", 200
+        else:
+            return f"Błąd podczas kopiowania pliku '{object_key}'.", 500
+
+    print("Nieobsługiwany typ wiadomości SNS.")
+    return "Nieobsługiwany typ wiadomości SNS.", 400

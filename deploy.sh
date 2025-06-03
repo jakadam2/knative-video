@@ -86,17 +86,7 @@ aws s3api put-bucket-notification-configuration \
       {
         \"Id\": \"knative-video-notification\",
         \"TopicArn\": \"$SNS_TOPIC_ARN\",
-        \"Events\": [\"s3:ObjectCreated:*\"],
-        \"Filter\": {
-          \"Key\": {
-            \"FilterRules\": [
-              {
-                \"Name\": \"prefix\",
-                \"Value\": \"$PREFIX-\"
-              }
-            ]
-          }
-        }
+        \"Events\": [\"s3:ObjectCreated:*\"]
       }
     ]
   }"
