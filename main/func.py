@@ -12,7 +12,7 @@ import cv2
 
 def split_video_cv2(s3_client, bucket_name, object_key, local_path, frame_chunk_size=30):
 
-    folder_name = os.path.splitext(os.path.basename(object_key))[0]
+    folder_name = os.path.splitext(os.path.basename(object_key))[0].replace('__process__', '')
     temp_dir = tempfile.mkdtemp()
     
     cap = cv2.VideoCapture(local_path)
@@ -40,7 +40,7 @@ def split_video_cv2(s3_client, bucket_name, object_key, local_path, frame_chunk_
                     chunk_keys.append(chunk_key)
 
                 chunk_index += 1
-                chunk_filename = f"{folder_name}_part{chunk_index}.mp4"
+                chunk_filename = f"{folder_name}_part{chunk_index}.mp4".replace('__process__', '')
                 chunk_key = f"{folder_name}/{chunk_filename}"
                 temp_chunk_path = os.path.join(temp_dir, chunk_filename)
                 out = cv2.VideoWriter(temp_chunk_path, fourcc, fps, (width, height))
@@ -64,45 +64,23 @@ def split_video_cv2(s3_client, bucket_name, object_key, local_path, frame_chunk_
 
 def merge_video_cv2(s3_client, bucket_name, chunk_keys, merged_key):
 
-
     temp_dir = tempfile.mkdtemp()
-
-    processed_manifest_path = os.path.join(temp_dir, "processed.txt")
-
-    # Ustal klucz S3, pod którym będziemy ciągle nadpisywać processed.txt
-    prefix = os.path.dirname(merged_key)
-    processed_key = (
-        os.path.join(prefix, "processed.txt") if prefix else "processed.txt"
-    )
-    
+ 
     try:
         local_chunk_paths = []
         for idx, key in enumerate(sorted(chunk_keys), start=1):
             local_path = os.path.join(temp_dir, os.path.basename(key))
-            print(
-                f"[{idx}/{len(chunk_keys)}] Pobieranie segmentu s3://{bucket_name}/{key} -> {local_path}"
-            )
             s3_client.download_file(bucket_name, key, local_path)
             local_chunk_paths.append(local_path)
 
-            # Dopisz bieżący key do manifestu
-            with open(processed_manifest_path, "a", encoding="utf-8") as manifest:
-                manifest.write(f"{key}\n")
-            s3_client.upload_file(processed_manifest_path, bucket_name, processed_key)
-            print(
-                f"Zaktualizowano processed.txt w s3://{bucket_name}/{processed_key} (dodano: {key})"
-            )
-            
         cap_test = cv2.VideoCapture(local_chunk_paths[0])
-        if not cap_test.isOpened():
-            raise AssertionError(f"BŁĄD: Nie można otworzyć pierwszego segmentu wideo: {local_chunk_paths[0]}")
         
         fps = int(cap_test.get(cv2.CAP_PROP_FPS))
         width = int(cap_test.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap_test.get(cv2.CAP_PROP_FRAME_HEIGHT))
         cap_test.release()
         
-        merged_local_path = os.path.join(temp_dir, "merged_output.mp4")
+        merged_local_path = os.path.join(temp_dir, "merged_output.mp4").replace('__process__','')
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(merged_local_path, fourcc, fps, (width, height))
         
@@ -117,23 +95,11 @@ def merge_video_cv2(s3_client, bucket_name, chunk_keys, merged_key):
         
         out.release()
 
-        with open(processed_manifest_path, "a", encoding="utf-8") as manifest:
-            manifest.write("START UPLOADING\n")
-        s3_client.upload_file(processed_manifest_path, bucket_name, processed_key)
-        print("Dodano 'START UPLOADING' do processed.txt i wysłano do S3")
-
         s3_client.upload_file(merged_local_path, bucket_name, merged_key)
-        print(f"Merged MP4 uploaded to s3://{bucket_name}/{merged_key}")
-
-        with open(processed_manifest_path, "a", encoding="utf-8") as manifest:
-            manifest.write("STOP UPLOADING\n")
-        s3_client.upload_file(processed_manifest_path, bucket_name, processed_key)
-        print("Dodano 'STOP UPLOADING' do processed.txt i wysłano do S3")
         
         for key in chunk_keys:
             s3_client.delete_object(Bucket=bucket_name, Key=key)
             
-
     finally:
         for f in os.listdir(temp_dir):
             os.remove(os.path.join(temp_dir, f))
@@ -158,28 +124,12 @@ def process_video(bucket_name, object_key,
 
         chunk_keys, folder_name = split_video_cv2(s3, bucket_name, object_key, local_path, frame_chunk_size)
 
-        r
-
-        merged_key = object_key.replace(os.path.splitext(object_key)[1], "_merged.mp4")
-
-        chunks_file_path = os.path.join(temp_dir, "chunks.txt")
-        with open(chunks_file_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(chunk_keys))
-        prefix = os.path.dirname(object_key)
-        manifest_key = os.path.join(prefix, "chunks.txt") if prefix else "chunks.txt"
-
-        s3.upload_file(chunks_file_path, bucket_name, manifest_key)
+        merged_key = object_key.replace(os.path.splitext(object_key)[1], "_merged.mp4").replace('__process__', '')
 
         try:
             merge_video_cv2(s3, bucket_name, chunk_keys, merged_key)
         except Exception as e:
-            chunks_file_path = os.path.join(temp_dir, "error.txt")
-            with open(chunks_file_path, "w", encoding="utf-8") as f:
-                f.write(str(e))
-            prefix = os.path.dirname(object_key)
-            manifest_key = os.path.join(prefix, "error.txt") if prefix else "error.txt"
-
-            s3.upload_file(chunks_file_path, bucket_name, manifest_key)
+            ...
 
 
 def extract_s3_info(sns_message: dict):
@@ -191,9 +141,11 @@ def extract_s3_info(sns_message: dict):
 
 
 def main(context: Context):
-    
+    aws_access_key=''
+    aws_secret_key=''
+    aws_session_token=''
+    aws_region = 'us-east-1'  
     bucket_name = 'knative-video-s3'
-    print("Otrzymano żądanie")
 
     if 'request' not in context:
         return "{}", 200
@@ -201,17 +153,15 @@ def main(context: Context):
     req: Request = context.request
     data = req.get_json(force=True, silent=True)
     if not data:
-        return "Brak danych JSON w żądaniu.", 400
+        return "Unhandled request.", 400
 
     if data.get("Type") == "SubscriptionConfirmation":
         subscribe_url = data.get("SubscribeURL")
         try:
             response = requests.get(subscribe_url)
-            if response.status_code == 200:
-                print("Subskrypcja potwierdzona pomyślnie.")
         except Exception as e:
-            print(f"Błąd potwierdzenia subskrypcji: {e}")
-        return "Potwierdzenie subskrypcji obsłużone.", 200
+            pass
+        return "OK", 200
 
     if data.get("Type") == "Notification":
         try:
@@ -222,7 +172,7 @@ def main(context: Context):
 
         bucket_name, object_key = extract_s3_info(message)
         if not bucket_name or not object_key:
-            return "Nieprawidłowe dane SNS.", 400
+            return "Unhandled request", 400
 
         if 'part' not in object_key and 'mp4' in object_key and 'merged' not in object_key:
             process_video(
@@ -233,7 +183,6 @@ def main(context: Context):
             aws_session_token=aws_session_token,
             )
   
-        return f"Plik '{object_key}' został podzielony i wysłany do folderu.", 200
+        return f"OK", 200
   
-
-    return "Nieobsługiwany typ wiadomości SNS.", 400
+    return "Unhandled request.", 400
