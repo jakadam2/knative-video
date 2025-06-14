@@ -8,4 +8,4 @@ build:
   builder: pack
 deploy:
   namespace: default
-  image: 125383788004.dkr.ecr.us-east-1.amazonaws.com/default/knative-video@sha256:4c4c4c954d135a66b1c0298807329d9bb174b859b48ee49e5a03de933b72377e
+  image: 125383788004.dkr.ecr.us-east-1.amazonaws.com/default/knative-video@sha256:06a140ac4f31944683c71d10f66358b7cf1618b9ee9e6d3eb4d9bffde054b477
