@@ -47,10 +47,11 @@ def get_vid(s3_client, bucket_name,object_key):
 
 
 def main(context: Context):    
-    aws_access_key = ''
-    aws_secret_key = ''
-    aws_session_token = ''
+    aws_access_key=''
+    aws_secret_key=''
+    aws_session_token=''
     aws_region = 'us-east-1'  
+    bucket_name = 'knative-video-s3'  
     print("Otrzymano żądanie")
 
     if 'request' not in context:
@@ -62,7 +63,7 @@ def main(context: Context):
         return "Brak danych JSON w żądaniu.", 400
     
     key = data.get("key")
-    bucket_name = data.get("bucket")
+
     
     s3 = boto3.client(
         's3',

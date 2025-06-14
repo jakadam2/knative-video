@@ -9,6 +9,30 @@ import tempfile
 import boto3
 import cv2 
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import requests
+
+def _post_chunk(url: str, key: str) -> tuple[str, int]:
+    try:
+        r = requests.post(url, json={"key": key}, timeout=30)
+        return key, r.status_code
+    except Exception:
+        return key, -1
+
+def dispatch_chunks(chunk_keys: list[str], url: str, max_workers: int = 10, overall_timeout: int = 600) -> list[tuple[str, int]]:
+    results: list[tuple[str, int]] = []
+    start = time.time()
+    with ThreadPoolExecutor(max_workers=max_workers) as exe:
+        fut_to_key = {exe.submit(_post_chunk, url, k): k for k in chunk_keys}
+        try:
+            for fut in as_completed(fut_to_key, timeout=overall_timeout):
+                results.append(fut.result())
+        except Exception:
+            pass  # timeout or other issue
+    if time.time() - start >= overall_timeout or len(results) != len(chunk_keys):
+        raise TimeoutError("Not all chunks responded in time")
+    return results
+
 
 def split_video_cv2(s3_client, bucket_name, object_key, local_path, frame_chunk_size=30):
 
@@ -123,6 +147,8 @@ def process_video(bucket_name, object_key,
         s3.download_file(bucket_name, object_key, local_path)
 
         chunk_keys, folder_name = split_video_cv2(s3, bucket_name, object_key, local_path, frame_chunk_size)
+        endpoint = "http://procvid.default.svc.cluster.local"
+        responses = dispatch_chunks(chunk_keys, endpoint)
 
         merged_key = object_key.replace(os.path.splitext(object_key)[1], "_merged.mp4").replace('__process__', '')
 
