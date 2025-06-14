@@ -3,3 +3,4 @@ flask
 requests
 elementpath
 boto3
+opencv-python-headless

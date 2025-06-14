@@ -36,8 +36,7 @@ aws ecr create-repository \
   --region "$REGION" \
   --tags Key=CreatedBy,Value=CLI
 
-aws ecr get-login-password --region "$REGION" \
-  | docker login --username AWS --password-stdin "$SNS_ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
+aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$SNS_ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
 
 ## Create SNS topic
 SNS_TOPIC_ARN="arn:aws:sns:$REGION:$SNS_ACCOUNT_ID:video-topic"
