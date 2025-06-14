@@ -1,0 +1,6 @@
+parliament-functions==0.1.0
+flask
+requests
+elementpath
+boto3
+opencv-python-headless

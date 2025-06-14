@@ -1,0 +1,11 @@
+specVersion: 0.36.0
+name: procvid
+runtime: python
+image: 125383788004.dkr.ecr.us-east-1.amazonaws.com/default/knative-video:procvid
+namespace: default
+created: 2025-05-31T14:21:22.540531845+02:00
+build:
+  builder: pack
+deploy:
+  namespace: default
+  image: 125383788004.dkr.ecr.us-east-1.amazonaws.com/default/knative-video@sha256:06a140ac4f31944683c71d10f66358b7cf1618b9ee9e6d3eb4d9bffde054b477
