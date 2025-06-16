@@ -19,22 +19,18 @@ def _post_chunk(url: str, key: str) -> tuple[str, int]:
     except Exception:
         return key, -1
 
-def dispatch_chunks(chunk_keys: list[str], url: str, max_workers: int = 10, overall_timeout: int = 600) -> list[tuple[str, int]]:
+def dispatch_chunks(chunk_keys: list[str], url: str, max_workers: int = 20, overall_timeout: int = 1200) -> list[tuple[str, int]]:
     results: list[tuple[str, int]] = []
     start = time.time()
     with ThreadPoolExecutor(max_workers=max_workers) as exe:
         fut_to_key = {exe.submit(_post_chunk, url, k): k for k in chunk_keys}
-        try:
-            for fut in as_completed(fut_to_key, timeout=overall_timeout):
-                results.append(fut.result())
-        except Exception:
-            pass  # timeout or other issue
-    if time.time() - start >= overall_timeout or len(results) != len(chunk_keys):
-        raise TimeoutError("Not all chunks responded in time")
+        for fut in as_completed(fut_to_key, timeout=overall_timeout):
+            results.append(fut.result())
+
     return results
 
 
-def split_video_cv2(s3_client, bucket_name, object_key, local_path, frame_chunk_size=30):
+def split_video_cv2(s3_client, bucket_name, object_key, local_path, frame_chunk_size=100):
 
     folder_name = os.path.splitext(os.path.basename(object_key))[0].replace('__process__', '')
     temp_dir = tempfile.mkdtemp()
@@ -104,7 +100,7 @@ def merge_video_cv2(s3_client, bucket_name, chunk_keys, merged_key):
         height = int(cap_test.get(cv2.CAP_PROP_FRAME_HEIGHT))
         cap_test.release()
         
-        merged_local_path = os.path.join(temp_dir, "merged_output.mp4").replace('__process__','')
+        merged_local_path = os.path.join(temp_dir, "merged_output.mp4").replace('__process__', '')
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(merged_local_path, fourcc, fps, (width, height))
         
@@ -132,7 +128,7 @@ def merge_video_cv2(s3_client, bucket_name, chunk_keys, merged_key):
 
 def process_video(bucket_name, object_key,
                   aws_access_key, aws_secret_key, aws_session_token,
-                  region='us-east-1', frame_chunk_size=90):
+                  region='us-east-1', frame_chunk_size=300):
 
     s3 = boto3.client(
         's3',
@@ -149,13 +145,11 @@ def process_video(bucket_name, object_key,
         chunk_keys, folder_name = split_video_cv2(s3, bucket_name, object_key, local_path, frame_chunk_size)
         endpoint = "http://procvid.default.svc.cluster.local"
         responses = dispatch_chunks(chunk_keys, endpoint)
+        names = [response[0].replace(".mp4", "_cmpl.mp4") for response in responses]
 
         merged_key = object_key.replace(os.path.splitext(object_key)[1], "_merged.mp4").replace('__process__', '')
-
-        try:
-            merge_video_cv2(s3, bucket_name, chunk_keys, merged_key)
-        except Exception as e:
-            ...
+        merge_video_cv2(s3, bucket_name, names, merged_key)
+  
 
 
 def extract_s3_info(sns_message: dict):
@@ -167,9 +161,9 @@ def extract_s3_info(sns_message: dict):
 
 
 def main(context: Context):
-    aws_access_key=''
-    aws_secret_key=''
-    aws_session_token=''
+    aws_access_key='ASIAR2MLUYXSPH7DBUAZ'
+    aws_secret_key='PxwXuRPQvCQXF90fKLoFWsuC+Tu3Cq66AHzuKhNh'
+    aws_session_token='IQoJb3JpZ2luX2VjEHcaCXVzLXdlc3QtMiJHMEUCIQCARVLtDLqv9U2CDUuDUrzgXkrALKwAJQ3q1dqpUi8T7QIgQLxA8B/94JvbmgfXyFn0Es7JhxXTWPP8aFKvjB7GdAgqpAIIYBAAGgwxMjUzODM3ODgwMDQiDH8EGMGwPZWMOz36XSqBAt0pEljk+0acG1BltrZj+W//g+7OGln+VvpGEcwEQiyApECQmKtiPMn7rE8/8SdsineNJeopRQU+YXC00MXIT1OcXA9kongrxnUZirIAEOIUE7VPUDUojardIihT2cOldrg+ThPVihTb5C77Wqq3CdFIIpo5mhIAMr8Jk7IhhMN475BU80x+heu8+F0+iLOgSZBkXu2ZbmHm5y/2P7Au6c3USeoENaybc8uS9yb5mF/zmeVVrNu8ysgsQTPnT2JU1IzPnI1AYDWfs1zKc21jHncIIs//MAUD5C9boMRw9r/94SIwGyIwz+Zq3CypyOHjEBaoZP7V8kWyDybOCFMRWNBFMIngwMIGOp0BcdgEEaGCbEEnbosclJKvAvKc0ePOwvJPngx2QwyLsczYGTlP7/yYtKrhFrEbtQvZrd26GBhJ6pSFk84lvESf+Fq7GG9Dh3rx1Lhug3ZtMDaKRSjI+IpdV0JmEV2Ag/rfCzKdeO3Bx0SjqljO4AywtRTgV1AAaJ6j1MHcUaHU+3J560eeZz6LLyP3PkwOVvlJrVyYAIPYokhuFMhtJQ=='
     aws_region = 'us-east-1'  
     bucket_name = 'knative-video-s3'
 

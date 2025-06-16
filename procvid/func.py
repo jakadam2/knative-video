@@ -50,7 +50,6 @@ def main(context: Context):
     aws_access_key=''
     aws_secret_key=''
     aws_session_token=''
-    aws_region = 'us-east-1'  
     bucket_name = 'knative-video-s3'  
     print("Otrzymano żądanie")
 
